@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gesture Meme Tracker</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/holistic/holistic.js" crossorigin="anonymous"></script>
+
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #111;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+
+        /* Video and Canvas container */
+        .tracker-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        video, canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover; /* Keeps aspect ratio full screen */
+            transform: scaleX(-1); /* Mirror effect */
+        }
+
+        /* The Meme Display Frame */
+        #meme-frame {
+            position: absolute;
+            right: 20px; /* Shift to right */
+            top: 50%;
+            transform: translateY(-50%);
+            height: 45vh; /* Increased from 40vh */
+            width: auto;
+            max-width: 45vw; /* Increased from 40vw */
+            object-fit: contain;
+            display: none; 
+            z-index: 10;
+            border: 4px solid white;
+            border-radius: 15px;
+            box-shadow: 5px 5px 15px rgba(0,0,0,0.5);
+        }
+
+        /* Caption Overlay */
+        #caption {
+            position: absolute;
+            bottom: 30px; /* Margin from bottom */
+            left: 50%;
+            transform: translateX(-50%);
+            color: white;
+            font-family: 'Impact', sans-serif; /* Classic meme font */
+            font-size: 4rem;
+            text-transform: uppercase;
+            text-align: center;
+            z-index: 20;
+            margin: 0;
+            padding: 0;
+            text-shadow: 
+                -3px -3px 0 #000,
+                 3px -3px 0 #000,
+                -3px  3px 0 #000,
+                 3px  3px 0 #000; /* Black stroke effect */
+            letter-spacing: 2px;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="tracker-container">
+        <video id="webcam" autoplay playsinline></video>
+        <canvas id="output_canvas"></canvas>
+    </div>
+
+    <img id="meme-frame" src="" alt="Meme Frame">
+
+    <h1 id="caption">Nerd brain rot final boss</h1>
+
+    <audio id="meme-audio" src="assets/fahhhhh.mp3"></audio> 
+
+    <script>
+        const videoElement = document.getElementById('webcam');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const memeFrame = document.getElementById('meme-frame');
+        const memeAudio = document.getElementById('meme-audio');
+
+        // Set our constant default meme
+        const DEFAULT_MEME = 'assets/image1.JPG'; 
+        memeFrame.src = DEFAULT_MEME;
+        memeFrame.style.display = 'block'; // Ensure it's visible right from the start
+
+        let currentMeme = DEFAULT_MEME;
+
+        // Set up MediaPipe Holistic
+        const holistic = new Holistic({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/holistic/${file}`;
+        }});
+
+        holistic.setOptions({
+            modelComplexity: 1,
+            smoothLandmarks: true,
+            enableSegmentation: false,
+            refineFaceLandmarks: true,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+
+        holistic.onResults(onResults);
+
+        // Start Webcam
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await holistic.send({image: videoElement});
+            },
+            width: 1280,
+            height: 720
+        });
+        camera.start();
+
+        function onResults(results) {
+            canvasElement.width = videoElement.videoWidth;
+            canvasElement.height = videoElement.videoHeight;
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+            const drawingStyle = {color: '#00BFFF', lineWidth: 1};
+            const landmarkStyle = {color: '#00BFFF', lineWidth: 0, radius: 1};
+
+            // Draw Pose, Face, and Hands
+            if (results.poseLandmarks) drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, drawingStyle);
+            if (results.faceLandmarks) {
+                drawConnectors(canvasCtx, results.faceLandmarks, FACEMESH_TESSELATION, {color: 'rgba(0, 191, 255, 0.1)', lineWidth: 0.5});
+                drawConnectors(canvasCtx, results.faceLandmarks, FACEMESH_RIGHT_EYE, drawingStyle);
+                drawConnectors(canvasCtx, results.faceLandmarks, FACEMESH_LEFT_EYE, drawingStyle);
+                drawConnectors(canvasCtx, results.faceLandmarks, FACEMESH_FACE_OVAL, drawingStyle);
+                drawConnectors(canvasCtx, results.faceLandmarks, FACEMESH_LIPS, drawingStyle);
+            }
+            if (results.leftHandLandmarks) {
+                drawConnectors(canvasCtx, results.leftHandLandmarks, HAND_CONNECTIONS, drawingStyle);
+                drawLandmarks(canvasCtx, results.leftHandLandmarks, landmarkStyle);
+            }
+            if (results.rightHandLandmarks) {
+                drawConnectors(canvasCtx, results.rightHandLandmarks, HAND_CONNECTIONS, drawingStyle);
+                drawLandmarks(canvasCtx, results.rightHandLandmarks, landmarkStyle);
+            }
+
+            // Call our detection logic
+            detectMemeGestures(results);
+
+            canvasCtx.restore();
+        }
+
+       // --- HELPER FUNCTIONS FOR GESTURE MATH ---
+        
+        // 1. Calculate distance between two landmarks
+        function getDistance(lm1, lm2) {
+            return Math.sqrt(Math.pow(lm1.x - lm2.x, 2) + Math.pow(lm1.y - lm2.y, 2));
+        }
+
+        // 2. Middle Finger Check (Image 2)
+        function isMiddleFingerExtended(landmarks) {
+            if (!landmarks) return false;
+            const middleUp = landmarks[12].y < landmarks[10].y && landmarks[10].y < landmarks[9].y;
+            const indexDown = landmarks[8].y > landmarks[6].y;
+            const ringDown = landmarks[16].y > landmarks[14].y;
+            const pinkyDown = landmarks[20].y > landmarks[18].y;
+            return middleUp && indexDown && ringDown && pinkyDown;
+        }
+
+        // 3. One Eye Closed (Winking) Check (Image 4)
+        function isOneEyeClosed(face) {
+            if (!face) return false;
+            const faceHeight = getDistance(face[10], face[152]); 
+            const leftEyeDist = getDistance(face[159], face[145]) / faceHeight;
+            const rightEyeDist = getDistance(face[386], face[374]) / faceHeight;
+            
+            const leftClosed = leftEyeDist < 0.018;
+            const rightClosed = rightEyeDist < 0.018;
+            
+            // Return true if exactly one eye is closed
+            return (leftClosed && !rightClosed) || (!leftClosed && rightClosed);
+        }
+
+        // 4. Biting Finger Check (Image 3)
+        function isBitingFinger(face, handLeft, handRight) {
+            if (!face) return false;
+            const mouthCenter = face[13]; 
+            const hands = [handLeft, handRight].filter(h => h !== undefined);
+            for (const hand of hands) {
+                const tips = [4, 8, 12, 16, 20]; 
+                for (const tip of tips) {
+                    if (getDistance(hand[tip], mouthCenter) < 0.05) return true; 
+                }
+            }
+            return false;
+        }
+
+        // 5. Two Fingers (Peace Sign) Check (Image 7)
+        function isTwoFingersUp(hand) {
+            if (!hand) return false;
+            const indexUp = hand[8].y < hand[6].y;
+            const middleUp = hand[12].y < hand[10].y;
+            const ringDown = hand[16].y > hand[14].y;
+            const pinkyDown = hand[20].y > hand[18].y;
+            return indexUp && middleUp && ringDown && pinkyDown;
+        }
+
+        // 6. Hand on Left Chest Check (Image 8)
+        function isHandOnLeftChest(pose, handLeft, handRight) {
+            if (!pose) return false;
+            const leftChest = { x: pose[11].x, y: pose[11].y + 0.15 }; 
+            let handClose = false;
+            if (handLeft && getDistance(handLeft[0], leftChest) < 0.15) handClose = true;
+            if (handRight && getDistance(handRight[0], leftChest) < 0.15) handClose = true;
+            return handClose;
+        }
+
+        // 7. Hands on Chin (Image 9)
+        function isHandOnChin(face, handLeft, handRight) {
+            if (!face) return false;
+            const chin = face[152]; // Bottom center of the face
+            const checkClose = (hand) => {
+                if (!hand) return false;
+                // Check wrist (0) and knuckles (5, 9) with a slightly larger radius
+                return getDistance(hand[0], chin) < 0.15 || 
+                       getDistance(hand[5], chin) < 0.15 || 
+                       getDistance(hand[9], chin) < 0.15;
+            };
+            return checkClose(handLeft) || checkClose(handRight);
+        }
+
+        // 8. Choking Neck (Image 10)
+        function isChokingNeck(pose, handLeft, handRight) {
+            if (!pose || !handLeft || !handRight) return false;
+            // Approximate neck as between the shoulders and slightly up
+            const neck = { x: (pose[11].x + pose[12].x) / 2, y: (pose[11].y + pose[12].y) / 2 - 0.1 };
+            const leftClose = getDistance(handLeft[0], neck) < 0.12;
+            const rightClose = getDistance(handRight[0], neck) < 0.12;
+            return leftClose && rightClose; // Requires BOTH hands
+        }
+
+        // 9. Finger on Temple (Image 11)
+        function isFingerOnTemple(face, handLeft, handRight) {
+            if (!face) return false;
+            const leftTemple = face[162]; // Approximate left temple
+            const rightTemple = face[389]; // Approximate right temple
+            
+            let fingerClose = false;
+            // Checking if the index finger tip (landmark 8) is near either temple
+            if (handLeft && (getDistance(handLeft[8], leftTemple) < 0.08 || getDistance(handLeft[8], rightTemple) < 0.08)) fingerClose = true;
+            if (handRight && (getDistance(handRight[8], leftTemple) < 0.08 || getDistance(handRight[8], rightTemple) < 0.08)) fingerClose = true;
+            return fingerClose;
+        }
+
+        // 10. Both Hands on Head (Image 12)
+        function isHoldingHead(face, handLeft, handRight) {
+            if (!face || !handLeft || !handRight) return false;
+            const topOfHead = face[10]; // Top center of the face mesh
+            // Check if wrist (0) is near the top of the head
+            const leftClose = getDistance(handLeft[0], topOfHead) < 0.2 || handLeft[0].y < topOfHead.y;
+            const rightClose = getDistance(handRight[0], topOfHead) < 0.2 || handRight[0].y < topOfHead.y;
+            return leftClose && rightClose; // Requires BOTH hands
+        }
+
+        // 11. Closing Eyes (Image 13)
+        function isEyesClosed(face) {
+            if (!face) return false;
+            // Compare the distance between top/bottom eyelids to the overall height of the face to normalize it
+            const faceHeight = getDistance(face[10], face[152]); 
+            const leftEyeDist = getDistance(face[159], face[145]) / faceHeight;
+            const rightEyeDist = getDistance(face[386], face[374]) / faceHeight;
+            
+            // If the eyelids are extremely close together relative to face size
+            return leftEyeDist < 0.018 && rightEyeDist < 0.018; 
+        }
+
+
+        // --- MAIN DETECTION LOGIC ---
+        function detectMemeGestures(results) {
+            let detectedMeme = DEFAULT_MEME; 
+            
+            const face = results.faceLandmarks;
+            const pose = results.poseLandmarks;
+            const leftH = results.leftHandLandmarks;
+            const rightH = results.rightHandLandmarks;
+
+            let leftRaised = pose ? (pose[15].y < pose[11].y) : false;
+            let rightRaised = pose ? (pose[16].y < pose[12].y) : false;
+
+            // PRIORITY CHECK: Order matters! 
+            // Specific two-handed gestures go first so they don't get accidentally triggered as "one hand raised"
+            
+            if (isChokingNeck(pose, leftH, rightH)) {
+                detectedMeme = 'assets/image10.JPG';
+            }
+            else if (isHoldingHead(face, leftH, rightH)) {
+                detectedMeme = 'assets/image12.JPG';
+            }
+            else if (isEyesClosed(face)) {
+                detectedMeme = 'assets/image13.JPG';
+            }
+            else if (isBitingFinger(face, leftH, rightH)) {
+                detectedMeme = 'assets/image3.JPG';
+            }
+            else if (isFingerOnTemple(face, leftH, rightH)) {
+                detectedMeme = 'assets/image11.JPG';
+            }
+            else if (isHandOnChin(face, leftH, rightH)) {
+                detectedMeme = 'assets/image9.JPG';
+            }
+            else if (isHandOnLeftChest(pose, leftH, rightH)) {
+                detectedMeme = 'assets/image8.JPG';
+            }
+            else if (isMiddleFingerExtended(leftH) || isMiddleFingerExtended(rightH)) {
+                detectedMeme = 'assets/image2.JPG';
+            } 
+            else if (isTwoFingersUp(leftH) || isTwoFingersUp(rightH)) {
+                detectedMeme = 'assets/image7.JPG';
+            } 
+            else if (leftRaised && rightRaised) {
+                detectedMeme = 'assets/image5.JPG';
+            } 
+            else if (leftRaised || rightRaised) {
+                detectedMeme = 'assets/image6.JPG';
+            } 
+            else if (isOneEyeClosed(face)) {
+                detectedMeme = 'assets/image4.JPG';
+            }
+
+            // Update UI if changed
+            if (detectedMeme !== currentMeme) {
+                memeFrame.src = detectedMeme;
+                currentMeme = detectedMeme;
+                
+                // Play audio on change, but not when reverting to default or image4
+                if (detectedMeme !== DEFAULT_MEME && detectedMeme !== 'assets/image4.JPG') {
+                    memeAudio.currentTime = 0; // Rewind in case it's still playing
+                    memeAudio.play().catch(e => console.log("Audio play failed:", e));
+                }
+            }
+        }
+    </script>
+</body>
+</html>
